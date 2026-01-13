@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">navHUD</string>
+    <string name="accessibility_service_description">Reads and logs notifications for analysis.</string>
+</resources>
