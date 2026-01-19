@@ -28,6 +28,9 @@ class BleManager(private val context: Context) {
     private val _isConnected = MutableStateFlow(false)
     val isConnected = _isConnected.asStateFlow()
 
+    private val _isReady = MutableStateFlow(false)
+    val isReady = _isReady.asStateFlow()
+
     private val writeQueue: Queue<ByteArray> = LinkedList()
     private var isWriting = false
     private var connectionJob: Job? = null
@@ -45,53 +48,47 @@ class BleManager(private val context: Context) {
     private var navHudCharacteristic: BluetoothGattCharacteristic? = null
 
     fun startConnectionLoop() {
-        if (connectionJob?.isActive == true) return // Already running
+        if (connectionJob?.isActive == true) return
         connectionJob = CoroutineScope(Dispatchers.Default).launch {
             while (true) {
-                if (!_isConnected.value) {
+                if (_isConnected.value) {
+                    Log.d("BleManager", "Keep-alive: Checking connection status via RSSI...")
+                    if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                        val rssiCallSuccess = gatt?.readRemoteRssi()
+                        if (rssiCallSuccess == false) {
+                            Log.e("BleManager", "Keep-alive: readRemoteRssi() call failed immediately. Forcing disconnect.")
+                            _isConnected.value = false
+                            _isReady.value = false
+                        }
+                    }
+                } else {
                     startScan()
                 }
-                delay(5000) // Wait 5 seconds between connection attempts
+                delay(10000)
             }
         }
-        Log.d("BleManager", "Connection loop started.")
     }
 
     fun stopConnectionLoop() {
         connectionJob?.cancel()
-        connectionJob = null
         if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
             bleScanner.stopScan(scanCallback)
         }
         if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-            gatt?.disconnect()
+            gatt?.close()
         }
-        Log.d("BleManager", "Connection loop stopped.")
     }
 
     private fun startScan() {
-        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-            Log.e("BleManager", "Bluetooth scan permission not granted")
-            return
-        }
-        
-        if (!bluetoothAdapter.isEnabled) {
-            Log.e("BleManager", "Bluetooth is not enabled.")
-            return
-        }
+        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) return
+        if (!bluetoothAdapter.isEnabled) return
 
-        // Stop any previous scan before starting a new one to prevent resource leaks
         bleScanner.stopScan(scanCallback)
-        Log.d("BleManager", "Stopping previous scan (if any) and starting a new one.")
 
-        val scanFilter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
-
+        val scanFilter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
         val scanSettings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
         bleScanner.startScan(listOf(scanFilter), scanSettings, scanCallback)
-        Log.d("BleManager", "New scan started with filter for UUID: $SERVICE_UUID")
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -99,12 +96,8 @@ class BleManager(private val context: Context) {
             if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
                 bleScanner.stopScan(this)
             }
-
             val device = result.device
-            Log.d("BleManager", "Found device matching filter: ${device.name ?: "Unknown"}")
-
             if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
-
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             } else {
@@ -115,18 +108,34 @@ class BleManager(private val context: Context) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            val deviceAddress = gatt.device.address
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 _isConnected.value = true
                 this@BleManager.gatt = gatt
-                Log.d("BLEconnection", "Connection Successful. Discovering services...")
+                Log.d("BLEconnection", "Device $deviceAddress connected.")
                 if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                     gatt.discoverServices()
                 }
             } else {
                 _isConnected.value = false
+                _isReady.value = false
                 writeQueue.clear()
                 isWriting = false
-                Log.d("BLEconnection", "Disconnected with status: $status")
+                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                    gatt.close()
+                }
+                this@BleManager.gatt = null
+                Log.d("BLEconnection", "Device $deviceAddress disconnected with status: $status")
+            }
+        }
+
+        override fun onReadRemoteRssi(gatt: BluetoothGatt?, rssi: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d("BleManager", "Keep-alive: RSSI read success ($rssi). Connection is active.")
+            } else {
+                Log.e("BleManager", "Keep-alive: RSSI read failed with status $status. Assuming disconnected.")
+                _isConnected.value = false
+                _isReady.value = false
             }
         }
 
@@ -135,9 +144,9 @@ class BleManager(private val context: Context) {
                 val service = gatt.getService(SERVICE_UUID)
                 navHudCharacteristic = service?.getCharacteristic(CHARACTERISTIC_UUID)
                 if (navHudCharacteristic != null) {
-                    Log.d("BleManager", "Service and characteristic found.")
+                    _isReady.value = true
                 } else {
-                    Log.e("BleManager", "Characteristic or Service not found!")
+                    _isReady.value = false
                 }
             }
         }
@@ -159,13 +168,16 @@ class BleManager(private val context: Context) {
     }
 
     fun sendData(data: ByteArray) {
-        if (!_isConnected.value) return
+        if (!_isReady.value) {
+            Log.w("BleManager", "sendData called but BLE is not ready. Data will not be sent.")
+            return
+        }
 
         val PAYLOAD_SIZE = 18
         val totalChunks = Math.ceil(data.size.toDouble() / PAYLOAD_SIZE).toInt()
 
         if (totalChunks > 255) {
-            Log.e("BleManager", "Data is too large to be sent with this packet format.")
+            Log.e("BleManager", "Data is too large for this packet format.")
             return
         }
 

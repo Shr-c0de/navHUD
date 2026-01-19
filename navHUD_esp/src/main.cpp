@@ -290,15 +290,43 @@ void BLEinit()
     Serial.println("BLE advertising started");
 }
 
+void func()
+{
+    Serial.println("Scanning I2C bus...");
+    bool found = false;
+
+    for (uint8_t addr = 1; addr < 127; addr++)
+    {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0)
+        {
+            Serial.print("Found device at 0x");
+            Serial.println(addr, HEX);
+            found = true;
+        }
+    }
+
+    if (!found)
+    {
+        Serial.println("No I2C devices found");
+    }
+}
+
 void setup()
 {
     Serial.begin(115200);
-    Wire.begin(21, 22);
+    while (!Serial)
+        delay(10);
+    Serial.println("USB serial OK");
+
+    Wire.begin(8, 9);
+
+
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
     {
         Serial.println("SSD1306 allocation failed");
         for (;;)
-            ;
+            Serial.println("SSD1306 allocation failed");
     }
     display.clearDisplay();
     display.setCursor(30, 0);

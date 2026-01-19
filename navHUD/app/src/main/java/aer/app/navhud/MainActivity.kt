@@ -49,6 +49,11 @@ class MainActivity : ComponentActivity() {
 
         // Request necessary permissions on startup
         requestBlePermissions()
+        
+        // Start the persistent connection service
+        Intent(this, BleConnectionService::class.java).also { intent ->
+            startService(intent)
+        }
 
         setContent {
             NavHUDTheme {
@@ -79,7 +84,7 @@ class MainActivity : ComponentActivity() {
 
     private fun requestBlePermissions() {
         val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS)
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }

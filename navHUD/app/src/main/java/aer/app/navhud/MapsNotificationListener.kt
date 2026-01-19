@@ -1,7 +1,6 @@
 package aer.app.navhud
 
 import android.app.Notification
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
@@ -13,7 +12,7 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 
@@ -23,15 +22,17 @@ class MapsNotificationListener : NotificationListenerService() {
     private val serviceJob = Job()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
 
+    private var navigationStopJob: Job? = null
+
     override fun onCreate() {
         super.onCreate()
         bleManager = (application as NavHudApplication).bleManager
 
-        // Observe BLE connection state to send data immediately on connect
+        // Observe the READY state to send data immediately upon connection and service discovery
         serviceScope.launch {
-            bleManager.isConnected.collect { isConnected ->
-                if (isConnected) {
-                    Log.d("MapsListener", "BLE connected. Checking for pending navigation data...")
+            bleManager.isReady.collect { isReady ->
+                if (isReady) {
+                    Log.d("MapsListener", "BLE is ready. Checking for pending navigation data...")
                     val currentNavInfo = NavigationRepository.navInfo.value
                     if (currentNavInfo.isNavigating) {
                         Log.d("MapsListener", "Pending data found. Sending upon connection.")
@@ -50,34 +51,36 @@ class MapsNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         if (sbn?.packageName == "com.google.android.apps.maps") {
-            Intent(this, BleConnectionService::class.java).also { intent ->
-                startService(intent)
-            }
+            navigationStopJob?.cancel()
             processNotification(sbn)
         }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         if (sbn?.packageName == "com.google.android.apps.maps") {
-            NavigationRepository.setNavigationStopped()
-            if (bleManager.isConnected.value) {
-                Log.d("MapsListener", "Navigation ended. Sending Standby state to device.")
-                val standbyData = serializeForBle("Standby State", "", "", null)
-                bleManager.sendData(standbyData)
+            navigationStopJob = serviceScope.launch {
+                delay(2000L)
+                Log.d("MapsListener", "Navigation stop delay finished. Sending Standby.")
+                NavigationRepository.setNavigationStopped()
+                if (bleManager.isConnected.value) {
+                    val standbyData = serializeForBle("Standby State", "", "", null)
+                    bleManager.sendData(standbyData)
+                }
             }
         }
     }
 
     override fun onNotificationRankingUpdate(rankingMap: RankingMap?) {
         getActiveNotifications()?.firstOrNull { it.packageName == "com.google.android.apps.maps" }?.let {
+            navigationStopJob?.cancel()
             processNotification(it)
         }
     }
 
     private fun toAsciiSafe(input: String?): String? {
         return input
-            ?.replace('·', '|')           // middle dot
-            ?.replace(Regex("[^\\x20-\\x7E]"), "") // strip non-ASCII
+            ?.replace('·', '|')
+            ?.replace(Regex("[^\\x20-\\x7E]"), "")
     }
 
     private fun processNotification(sbn: StatusBarNotification) {
