@@ -1,7 +1,6 @@
 package aer.app.navhud
 
 import android.Manifest
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -38,7 +37,10 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        // You can add logic here to handle permission results if needed
+        val allPermissionsGranted = permissions.all { it.value }
+        if (allPermissionsGranted) {
+            bleManager.startConnectionLoop()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,11 +51,6 @@ class MainActivity : ComponentActivity() {
 
         // Request necessary permissions on startup
         requestBlePermissions()
-        
-        // Start the persistent connection service
-        Intent(this, BleConnectionService::class.java).also { intent ->
-            startService(intent)
-        }
 
         setContent {
             NavHUDTheme {
@@ -84,7 +81,7 @@ class MainActivity : ComponentActivity() {
 
     private fun requestBlePermissions() {
         val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS)
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
@@ -93,7 +90,9 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
-        if (!allPermissionsGranted) {
+        if (allPermissionsGranted) {
+            bleManager.startConnectionLoop()
+        } else {
             requestPermissionLauncher.launch(requiredPermissions)
         }
     }

@@ -8,6 +8,6 @@ class NavHudApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        bleManager = BleManager(applicationContext)
+        bleManager = BleManager(this)
     }
 }
